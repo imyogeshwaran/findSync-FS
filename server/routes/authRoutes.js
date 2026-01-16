@@ -6,7 +6,79 @@ const userController = require('../controllers/userController');
 const bcrypt = require('bcrypt');
 require('dotenv').config();
 
-// Route for handling manual signup
+// ==================== ADMIN LOGIN ENDPOINT ====================
+// Dedicated endpoint for admin authentication with role validation
+router.post('/admin/login', async (req, res) => {
+  try {
+    const { username, email, password } = req.body;
+
+    // Validate input
+    if (!password || (!username && !email)) {
+      return res.status(400).json({ error: 'Username/Email and password are required' });
+    }
+
+    // Query admin table first - admins have separate table
+    let query = 'SELECT admin_id, username, email, password_hash, created_at FROM admin WHERE ';
+    let params = [];
+
+    if (username) {
+      query += 'LOWER(username) = LOWER(?)';
+      params.push(username);
+    } else {
+      query += 'LOWER(email) = LOWER(?)';
+      params.push(email);
+    }
+
+    const [admins] = await db.query(query, params);
+
+    if (!admins || admins.length === 0) {
+      return res.status(401).json({ error: 'Invalid admin credentials' });
+    }
+
+    const admin = admins[0];
+
+    // Compare password with hash
+    const passwordMatches = admin.password_hash ? await bcrypt.compare(password, admin.password_hash) : false;
+    if (!passwordMatches) {
+      return res.status(401).json({ error: 'Invalid admin credentials' });
+    }
+
+    // Generate JWT token with admin role
+    const jwtSecret = process.env.JWT_SECRET || 'dev-secret';
+    const token = jwt.sign(
+      {
+        admin_id: admin.admin_id,
+        username: admin.username,
+        email: admin.email,
+        role: 'admin' // Crucial: Include role in token
+      },
+      jwtSecret,
+      { expiresIn: '7d' }
+    );
+
+    // Log successful admin login (for audit trail)
+    console.log(`[ADMIN LOGIN SUCCESS] Admin ID: ${admin.admin_id}, Email: ${admin.email}, Timestamp: ${new Date().toISOString()}`);
+
+    return res.json({
+      success: true,
+      token,
+      admin: {
+        admin_id: admin.admin_id,
+        username: admin.username,
+        email: admin.email,
+        created_at: admin.created_at
+      }
+    });
+  } catch (error) {
+    console.error('[ADMIN LOGIN ERROR]', error);
+    return res.status(500).json({
+      error: 'Admin login failed',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// ==================== USER SIGNUP ENDPOINT ====================
 router.post('/signup', async (req, res) => {
   try {
     console.log('auth/signup called with body:', req.body);
@@ -40,7 +112,8 @@ router.post('/signup', async (req, res) => {
         SET 
           name = COALESCE(?, name),
           mobile = COALESCE(?, mobile),
-          password = COALESCE(?, password)
+          password = COALESCE(?, password),
+          role = COALESCE(role, 'user')
         WHERE user_id = ?
       `;
       
@@ -59,7 +132,8 @@ router.post('/signup', async (req, res) => {
             id: updated.user_id,
             firebase_uid: updated.firebase_uid,
             email: updated.email,
-            name: updated.name
+            name: updated.name,
+            role: 'user'
           },
           process.env.JWT_SECRET || 'dev-secret',
           { expiresIn: '7d' }
@@ -89,9 +163,9 @@ router.post('/signup', async (req, res) => {
     // Use a direct INSERT with known columns - simpler and more reliable
     const insertSql = `
       INSERT INTO Users (
-        firebase_uid, name, email, mobile, phone, password
+        firebase_uid, name, email, mobile, phone, password, role
       ) VALUES (
-        ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?
       )`;
     const hashedForInsert = password ? await bcrypt.hash(password, 10) : null;
     const values = [
@@ -100,7 +174,8 @@ router.post('/signup', async (req, res) => {
       email,
       normalizedMobile,  // try mobile column
       normalizedMobile,  // also update phone column for compatibility
-      hashedForInsert
+      hashedForInsert,
+      'user'  // Default role for new users
     ];
 
     console.log('Executing INSERT with SQL:', insertSql);
@@ -119,12 +194,12 @@ router.post('/signup', async (req, res) => {
         console.log('Retrying INSERT without mobile/phone columns...');
         const fallbackSql = `
           INSERT INTO Users (
-            firebase_uid, name, email, password
+            firebase_uid, name, email, password, role
           ) VALUES (
-            ?, ?, ?, ?
+            ?, ?, ?, ?, ?
           )`;
   const hashedFallback = password ? await bcrypt.hash(password, 10) : null;
-  const fallbackValues = [firebase_uid, name || null, email, hashedFallback];
+  const fallbackValues = [firebase_uid, name || null, email, hashedFallback, 'user'];
         
         try {
           const [fallbackResult] = await db.query(fallbackSql, fallbackValues);
@@ -152,7 +227,8 @@ router.post('/signup', async (req, res) => {
         id: userId,
         firebase_uid,
         email,
-        name
+        name,
+        role: 'user'
       },
       jwtSecret,
       { expiresIn: '7d' }
@@ -201,12 +277,13 @@ router.post('/login', async (req, res) => {
     let userId = null;
     let userName = name;
     let userFirebaseUid = firebase_uid;
+    let userRole = 'user'; // Default role for regular users
 
     try {
       // For regular login, check email and password
       if (isRegularLogin) {
         const [users] = await db.query(
-          'SELECT user_id, firebase_uid, name, email, mobile, password FROM Users WHERE LOWER(email) = LOWER(?)',
+          'SELECT user_id, firebase_uid, name, email, mobile, password, role FROM Users WHERE LOWER(email) = LOWER(?)',
           [email]
         );
 
@@ -215,6 +292,13 @@ router.post('/login', async (req, res) => {
         }
 
         const user = users[0];
+        
+        // SECURITY: Prevent admin role from using user login endpoint
+        if (user.role === 'admin') {
+          console.warn(`[SECURITY] Attempted admin user login via regular endpoint. Email: ${email}`);
+          return res.status(401).json({ error: 'Invalid email or password' });
+        }
+
         // Compare hashed password
         const passwordMatches = user.password ? await bcrypt.compare(password, user.password) : false;
         if (!passwordMatches) {
@@ -227,16 +311,18 @@ router.post('/login', async (req, res) => {
         userName = user.name;  // Keep existing name
         userEmail = user.email;
         userMobile = user.mobile;
+        userRole = user.role || 'user';
       } else {
         // For Firebase login, find user by firebase_uid or email
         const [existingUsers] = await db.query(
-          'SELECT user_id, firebase_uid, name, email FROM Users WHERE firebase_uid = ? OR LOWER(email) = LOWER(?)',
+          'SELECT user_id, firebase_uid, name, email, role FROM Users WHERE firebase_uid = ? OR LOWER(email) = LOWER(?)',
           [firebase_uid, email]
         );
     
-    if (existingUsers && existingUsers.length > 0) {
+        if (existingUsers && existingUsers.length > 0) {
           const user = existingUsers[0];
           userId = user.user_id;
+          userRole = user.role || 'user';
           
           // Only update if the new values are non-null and different from existing
           let updateFields = [];
@@ -272,31 +358,33 @@ router.post('/login', async (req, res) => {
             );
           }
         } else {
-          // Insert new user for Firebase auth
+          // Insert new user for Firebase auth with default 'user' role
           const [result] = await db.query(
-            'INSERT INTO Users (firebase_uid, name, email) VALUES (?, ?, ?)',
-            [firebase_uid, name, email]
+            'INSERT INTO Users (firebase_uid, name, email, role) VALUES (?, ?, ?, ?)',
+            [firebase_uid, name, email, 'user']
           );
           userId = result.insertId;
+          userRole = 'user';
         }
       }
 
-      // Issue JWT including the DB user id and name
+      // Issue JWT including the DB user id, name, and role
       const jwtSecret = process.env.JWT_SECRET || 'dev-secret';
       const token = jwt.sign(
         {
           id: userId,
           firebase_uid: userFirebaseUid,
           email,
-          name: userName
+          name: userName,
+          role: userRole  // Include role in token for frontend logic
         },
         jwtSecret,
         { expiresIn: '7d' }
       );
 
-      // Re-read user to include mobile and authoritative name/email
+      // Re-read user to include mobile and authoritative name/email/role
       try {
-        const [uRows] = await db.query('SELECT user_id, firebase_uid, name, email, mobile FROM Users WHERE user_id = ?', [userId]);
+        const [uRows] = await db.query('SELECT user_id, firebase_uid, name, email, mobile, role FROM Users WHERE user_id = ?', [userId]);
         const u = uRows && uRows[0] ? uRows[0] : null;
         res.json({
           token,
@@ -305,12 +393,13 @@ router.post('/login', async (req, res) => {
             firebase_uid: u ? u.firebase_uid : userFirebaseUid,
             email: u ? u.email : email,
             name: u ? u.name : userName,
-            mobile: u ? u.mobile || null : null
+            mobile: u ? u.mobile || null : null,
+            role: u ? u.role : userRole
           }
         });
       } catch (readErr) {
         console.warn('Could not re-query user after login:', readErr.message);
-        res.json({ token, user: { id: userId, firebase_uid: userFirebaseUid, email, name: userName } });
+        res.json({ token, user: { id: userId, firebase_uid: userFirebaseUid, email, name: userName, role: userRole } });
       }
     } catch (dbError) {
       console.error('Database error during login:', dbError);

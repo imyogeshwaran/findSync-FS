@@ -42,11 +42,11 @@ exports.syncUser = async (req, res) => {
         updateFields.push('email = ?');
         updateValues.push(email);
       }
-      if (normalizedMobile && !existingUser.mobile) {
+      if (normalizedMobile) {
         updateFields.push('mobile = ?');
         updateValues.push(normalizedMobile);
       }
-      if (password && !existingUser.password) {
+      if (password) {
         // Hash password before storing
         const hashed = await bcrypt.hash(password, 10);
         updateFields.push('password = ?');
