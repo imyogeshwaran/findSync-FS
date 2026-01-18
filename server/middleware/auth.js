@@ -23,7 +23,8 @@ const auth = async (req, res, next) => {
     }
 
     // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const jwtSecret = process.env.JWT_SECRET || 'dev-secret';
+    const decoded = jwt.verify(token, jwtSecret);
 
     console.log('✅ Token verified:', {
       id: decoded.id,

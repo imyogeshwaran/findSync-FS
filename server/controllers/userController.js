@@ -178,3 +178,78 @@ exports.getAllUsers = async (req, res) => {
     res.status(500).json({ error: 'Failed to get users' });
   }
 };
+
+// Update user mobile number
+exports.updateMobileNumber = async (req, res) => {
+  try {
+    console.log('📱 updateMobileNumber called');
+    console.log('req.user:', req.user);
+    
+    const userId = req.user?.id;
+    const { mobile } = req.body;
+
+    console.log('📱 Extracted values:', {
+      userId,
+      mobile,
+      reqUserKeys: req.user ? Object.keys(req.user) : 'No user'
+    });
+
+    if (!userId) {
+      console.error('❌ User ID not found');
+      console.log('Available in req.user:', req.user);
+      return res.status(400).json({ 
+        error: 'User ID not found in token',
+        debug: req.user
+      });
+    }
+
+    if (!mobile || mobile.trim() === '') {
+      return res.status(400).json({ error: 'Mobile number is required' });
+    }
+
+    if (mobile.length < 10) {
+      return res.status(400).json({ error: 'Mobile number must be at least 10 digits' });
+    }
+
+    console.log('🔄 Updating mobile for userId:', userId);
+
+    // Update the user's mobile number
+    const [result] = await db.query(
+      'UPDATE Users SET mobile = ? WHERE user_id = ?',
+      [mobile, userId]
+    );
+
+    console.log('✅ Update result:', result);
+
+    // Fetch the updated user data
+    const [users] = await db.query(
+      'SELECT user_id, firebase_uid, name, email, mobile FROM Users WHERE user_id = ?',
+      [userId]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = users[0];
+    res.json({
+      success: true,
+      message: 'Mobile number updated successfully',
+      user: {
+        id: user.user_id,
+        firebase_uid: user.firebase_uid,
+        name: user.name,
+        email: user.email,
+        mobile: user.mobile || null
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error updating mobile number:', error);
+    console.error('Stack:', error.stack);
+    res.status(500).json({ 
+      error: 'Failed to update mobile number', 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+};
