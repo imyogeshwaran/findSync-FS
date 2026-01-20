@@ -425,3 +425,243 @@ exports.rejectPost = async (req, res) => {
     });
   }
 };
+
+// Get all conversations (admin view)
+exports.getAllConversations = async (req, res) => {
+  try {
+    const adminId = req.admin && req.admin.admin_id;
+    if (!adminId) return res.status(401).json({ error: 'Unauthorized' });
+
+    // Group conversations by user pairs (sender_id, receiver_id)
+    // This ensures all messages between two users appear in a single conversation
+    const [conversations] = await db.query(
+      `SELECT 
+        MIN(c.contact_id) as contact_id,
+        c.sender_id,
+        c.receiver_id,
+        u_sender.name as sender_name,
+        u_sender.email as sender_email,
+        u_receiver.name as receiver_name,
+        u_receiver.email as receiver_email,
+        GROUP_CONCAT(DISTINCT i.item_name SEPARATOR ', ') as item_names,
+        COUNT(DISTINCT c.item_id) as item_count,
+        MAX(COALESCE(m.sent_at, c.contact_date)) as last_message_at,
+        COUNT(DISTINCT CASE WHEN m.is_deleted = FALSE THEN m.message_id ELSE NULL END) + 
+        COUNT(DISTINCT CASE WHEN c.message IS NOT NULL THEN c.contact_id ELSE NULL END) as message_count
+       FROM Contacts c
+       LEFT JOIN Users u_sender ON c.sender_id = u_sender.user_id
+       LEFT JOIN Users u_receiver ON c.receiver_id = u_receiver.user_id
+       LEFT JOIN Items i ON c.item_id = i.item_id
+       LEFT JOIN Messages m ON c.contact_id = m.contact_id
+       GROUP BY c.sender_id, c.receiver_id
+       ORDER BY last_message_at DESC`
+    );
+
+    res.json({
+      success: true,
+      conversations: conversations || []
+    });
+  } catch (err) {
+    console.error('Error fetching conversations:', err);
+    res.status(500).json({ error: 'Failed to fetch conversations', details: err.message });
+  }
+};
+
+// Get all messages in a conversation (admin view)
+exports.getConversationMessages = async (req, res) => {
+  try {
+    const adminId = req.admin && req.admin.admin_id;
+    const { contactId } = req.params;
+
+    if (!adminId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!contactId) return res.status(400).json({ error: 'Contact ID is required' });
+
+    // Get the reference contact to identify the user pair
+    const [contactRows] = await db.query(
+      `SELECT * FROM Contacts WHERE contact_id = ?`,
+      [contactId]
+    );
+
+    if (!contactRows || !contactRows.length) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const referenceContact = contactRows[0];
+    const senderId = referenceContact.sender_id;
+    const receiverId = referenceContact.receiver_id;
+
+    // Get ALL initial messages between these two users (from all their Contacts) with user info
+    const [allContacts] = await db.query(
+      `SELECT c.*,
+              u_sender.name as sender_name,
+              u_sender.email as sender_email,
+              u_receiver.name as receiver_name,
+              u_receiver.email as receiver_email
+       FROM Contacts c
+       LEFT JOIN Users u_sender ON c.sender_id = u_sender.user_id
+       LEFT JOIN Users u_receiver ON c.receiver_id = u_receiver.user_id
+       WHERE (c.sender_id = ? AND c.receiver_id = ?) OR (c.sender_id = ? AND c.receiver_id = ?)
+       ORDER BY c.contact_date ASC`,
+      [senderId, receiverId, receiverId, senderId]
+    );
+
+    // Fetch user details separately to ensure we have names for all users in the conversation
+    const [userDetails] = await db.query(
+      `SELECT user_id, name, email FROM Users WHERE user_id IN (?, ?)`,
+      [senderId, receiverId]
+    );
+
+    const userMap = {};
+    userDetails.forEach(user => {
+      userMap[user.user_id] = { name: user.name, email: user.email };
+    });
+
+    // Convert all initial contact messages with proper sender info
+    const initialMessages = allContacts.map(contact => {
+      const senderInfo = userMap[contact.sender_id] || { name: contact.sender_name, email: contact.sender_email };
+      const receiverInfo = userMap[contact.receiver_id] || { name: contact.receiver_name, email: contact.receiver_email };
+      
+      return {
+        message_id: -contact.contact_id,
+        contact_id: contact.contact_id,
+        sender_id: contact.sender_id,
+        receiver_id: contact.receiver_id,
+        message: contact.message,
+        sent_at: contact.contact_date,
+        read_at: null,
+        sender_name: senderInfo.name || senderInfo.email || 'Unknown',
+        sender_email: senderInfo.email,
+        receiver_name: receiverInfo.name || receiverInfo.email || 'Unknown',
+        receiver_email: receiverInfo.email,
+        deleted_by_name: null,
+        deleted_by_email: null,
+        is_deleted: false,
+        deletion_type: null,
+        is_initial_message: true,
+        item_id: contact.item_id
+      };
+    });
+
+    // Get ALL messages between these two users (from all their contact threads)
+    const contactIds = allContacts.map(c => c.contact_id);
+    let allFollowUpMessages = [];
+    
+    if (contactIds.length > 0) {
+      const [followUpMessages] = await db.query(
+        `SELECT m.*, 
+                u_sender.name as sender_name, 
+                u_sender.email as sender_email,
+                u_receiver.name as receiver_name,
+                u_receiver.email as receiver_email,
+                u_deleted.name as deleted_by_name,
+                u_deleted.email as deleted_by_email
+         FROM Messages m
+         LEFT JOIN Users u_sender ON m.sender_id = u_sender.user_id
+         LEFT JOIN Users u_receiver ON m.receiver_id = u_receiver.user_id
+         LEFT JOIN Users u_deleted ON m.deleted_by = u_deleted.user_id
+         WHERE m.contact_id IN (${contactIds.join(',')})
+         ORDER BY m.sent_at ASC`
+      );
+      allFollowUpMessages = followUpMessages || [];
+    }
+
+    // Merge and sort ALL messages chronologically
+    const messages = [...initialMessages, ...allFollowUpMessages].sort((a, b) => {
+      return new Date(a.sent_at) - new Date(b.sent_at);
+    });
+
+    res.json({
+      success: true,
+      messages: messages,
+      conversation: {
+        sender_id: senderId,
+        receiver_id: receiverId,
+        contact_id: contactId,
+        item_count: allContacts.length
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching conversation messages:', err);
+    res.status(500).json({ error: 'Failed to fetch messages', details: err.message });
+  }
+};
+
+// Admin delete message
+exports.adminDeleteMessage = async (req, res) => {
+  try {
+    const adminId = req.admin && req.admin.admin_id;
+    const { contactId, messageId } = req.params;
+
+    if (!adminId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!contactId) return res.status(400).json({ error: 'Contact ID is required' });
+    if (!messageId) return res.status(400).json({ error: 'Message ID is required' });
+
+    // Verify conversation exists
+    const [contactRows] = await db.query(
+      `SELECT * FROM Contacts WHERE contact_id = ?`,
+      [contactId]
+    );
+
+    if (!contactRows || !contactRows.length) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    // Check if this is an initial message (negative ID means it's from Contacts table)
+    if (parseInt(messageId) < 0) {
+      // This is an initial message from Contacts table
+      // We'll mark it as deleted in a logical way by updating the contact message to show it's deleted
+      const actualContactId = Math.abs(parseInt(messageId));
+      
+      const [contact] = await db.query(
+        `SELECT * FROM Contacts WHERE contact_id = ?`,
+        [actualContactId]
+      );
+
+      if (!contact || !contact.length) {
+        return res.status(404).json({ error: 'Message not found' });
+      }
+
+      // For initial messages, we'll clear the message content and mark it as deleted
+      // We can't actually delete the contact record as it's needed for conversation structure
+      await db.query(
+        `UPDATE Contacts 
+         SET message = '[Message deleted by admin]'
+         WHERE contact_id = ?`,
+        [actualContactId]
+      );
+
+      return res.json({
+        success: true,
+        message: 'Message deleted successfully'
+      });
+    }
+
+    // For follow-up messages (positive IDs), check in Messages table
+    const [messageRows] = await db.query(
+      `SELECT * FROM Messages WHERE message_id = ? AND contact_id = ?`,
+      [messageId, contactId]
+    );
+
+    if (!messageRows || !messageRows.length) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+
+    // Admin delete the message
+    const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    await db.query(
+      `UPDATE Messages 
+       SET is_deleted = TRUE, 
+           deletion_type = 'admin'
+       WHERE message_id = ?`,
+      [messageId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Message deleted by admin successfully'
+    });
+  } catch (err) {
+    console.error('Error deleting message:', err);
+    res.status(500).json({ error: 'Failed to delete message', details: err.message });
+  }
+};
