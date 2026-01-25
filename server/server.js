@@ -16,37 +16,151 @@ console.log('Environment variables:', {
 });
 
 const app = express();
-// const server = http.createServer(app);
-// const { Server } = require('socket.io');
-// const io = new Server(server, {
-//   cors: {
-//     origin: ['http://localhost:5174', 'http://127.0.0.1:5174', 'http://localhost:5173', 'http://127.0.0.1:5173'],
-//     methods: ["GET", "POST"],
-//     credentials: true,
-//     allowedHeaders: ["my-custom-header"],
-//   },
-//   pingTimeout: 60000,
-//   pingInterval: 25000
-// });
+const server = http.createServer(app);
+const { Server } = require('socket.io');
+const io = new Server(server, {
+  cors: {
+    origin: ['http://localhost:5174', 'http://127.0.0.1:5174', 'http://localhost:5173', 'http://127.0.0.1:5173'],
+    methods: ["GET", "POST"],
+    credentials: true,
+    allowedHeaders: ["Authorization"],
+  },
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  transports: ['websocket', 'polling']
+});
+
+// Track active connections by user
+const activeUsers = new Map(); // Map<userId, Set<socketIds>>
+const socketToUser = new Map(); // Map<socketId, userId>
 
 // Socket.IO connection handling
-// io.on('connection', (socket) => {
-//   console.log('Client connected:', socket.id);
+io.on('connection', (socket) => {
+  console.log('🔌 Client connected:', socket.id);
 
-//   socket.on('disconnect', (reason) => {
-//     console.log('Client disconnected:', socket.id, 'Reason:', reason);
-//   });
+  // Store connection
+  socket.on('user_connected', (userId) => {
+    if (!activeUsers.has(userId)) {
+      activeUsers.set(userId, new Set());
+    }
+    activeUsers.get(userId).add(socket.id);
+    socketToUser.set(socket.id, userId);
+    
+    // Join user-specific room
+    socket.join(`user:${userId}`);
+    
+    console.log(`✅ User ${userId} connected (${activeUsers.get(userId).size} sockets)`);
+    
+    // Notify user is online
+    socket.broadcast.emit('user_online', { userId });
+  });
 
-//   socket.on('error', (error) => {
-//     console.error('Socket error:', error);
-//   });
-// });
+  // Handle disconnect
+  socket.on('disconnect', (reason) => {
+    const userId = socketToUser.get(socket.id);
+    if (userId) {
+      const userSockets = activeUsers.get(userId);
+      if (userSockets) {
+        userSockets.delete(socket.id);
+        if (userSockets.size === 0) {
+          activeUsers.delete(userId);
+          socket.broadcast.emit('user_offline', { userId });
+          console.log(`⬜ User ${userId} went offline`);
+        }
+      }
+    }
+    socketToUser.delete(socket.id);
+    console.log('🔌 Client disconnected:', socket.id, 'Reason:', reason);
+  });
+
+  // Handle new message
+  socket.on('message_new', (data) => {
+    const { contactId, receiverId, message } = data;
+    console.log(`📨 New message on contact ${contactId} to user ${receiverId}`);
+    
+    // Send to receiver in real-time
+    if (activeUsers.has(receiverId)) {
+      io.to(`user:${receiverId}`).emit('message_received', {
+        contactId,
+        message,
+        timestamp: new Date().toISOString()
+      });
+    }
+  });
+
+  // Handle message edited
+  socket.on('message_edited', (data) => {
+    const { contactId, messageId, newText, receiverId } = data;
+    console.log(`✏️ Message ${messageId} edited on contact ${contactId}`);
+    
+    if (activeUsers.has(receiverId)) {
+      io.to(`user:${receiverId}`).emit('message_edited_notification', {
+        contactId,
+        messageId,
+        newText,
+        timestamp: new Date().toISOString()
+      });
+    }
+  });
+
+  // Handle message deleted
+  socket.on('message_deleted', (data) => {
+    const { contactId, messageId, receiverId } = data;
+    console.log(`🗑️ Message ${messageId} deleted on contact ${contactId}`);
+    
+    if (activeUsers.has(receiverId)) {
+      io.to(`user:${receiverId}`).emit('message_deleted_notification', {
+        contactId,
+        messageId,
+        timestamp: new Date().toISOString()
+      });
+    }
+  });
+
+  // Handle typing indicator
+  socket.on('typing', (data) => {
+    const { contactId, receiverId, isTyping } = data;
+    if (activeUsers.has(receiverId)) {
+      io.to(`user:${receiverId}`).emit('user_typing', {
+        contactId,
+        isTyping
+      });
+    }
+  });
+
+  // Handle message delivered
+  socket.on('message_delivered', (data) => {
+    const { messageId, senderId } = data;
+    if (activeUsers.has(senderId)) {
+      io.to(`user:${senderId}`).emit('message_delivered_notification', {
+        messageId,
+        deliveredAt: new Date().toISOString()
+      });
+    }
+  });
+
+  // Handle message read
+  socket.on('message_read', (data) => {
+    const { contactId, senderId } = data;
+    if (activeUsers.has(senderId)) {
+      io.to(`user:${senderId}`).emit('message_read_notification', {
+        contactId,
+        readAt: new Date().toISOString()
+      });
+    }
+  });
+
+  socket.on('error', (error) => {
+    console.error('🔴 Socket error:', error);
+  });
+});
 
 // Handle errors at the IO level
-// io.engine.on("connection_error", (err) => {
-//   console.error('Connection error:', err);
-// });
-// app.set('io', io);
+io.engine.on("connection_error", (err) => {
+  console.error('🔴 Connection error:', err);
+});
+
+app.set('io', io);
 
 // Middleware
 app.use(cors({
@@ -220,12 +334,13 @@ async function startServer() {
   }
   
   console.log('Starting HTTP server on port', PORT);
-  // Start server
+  // Start server with WebSocket support
   console.log(`Attempting to start server on port ${PORT}`);
-  const server = app.listen(PORT, () => {
+  server.listen(PORT, () => {
     console.log(`\n🚀 Server is running on port ${PORT}`);
     console.log(`📍 API: http://localhost:${PORT}`);
-    console.log(`💚 Health: http://localhost:${PORT}/health\n`);
+    console.log(`💚 WebSocket: ws://localhost:${PORT}`);
+    console.log(`📊 Health: http://localhost:${PORT}/health\n`);
   });
   
   server.on('listening', () => {
