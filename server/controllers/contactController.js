@@ -32,6 +32,16 @@ exports.createContact = async (req, res) => {
 
     console.log(`📨 Message saved: senderId=${senderId}, receiverId=${receiverId}, itemId=${item_id}, contactId=${result.insertId}`);
 
+    // Emit real-time notification to receiver
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('conversation_updated', {
+        itemId: item_id,
+        timestamp: new Date().toISOString()
+      });
+      console.log(`📨 Emitted conversation_updated for item ${item_id}`);
+    }
+
     res.json({ success: true, contact_id: result.insertId });
   } catch (err) {
     console.error('Error creating contact:', err.message);

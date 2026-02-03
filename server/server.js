@@ -30,16 +30,76 @@ const io = new Server(server, {
   transports: ['websocket', 'polling']
 });
 
+// Attach io to app so controllers can access it
+app.set('io', io);
+
+// Socket.IO authentication middleware
+const jwt = require('jsonwebtoken');
+const db = require('./config/database');
+
+io.use(async (socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token;
+    
+    if (!token) {
+      console.log('❌ Socket connection rejected: No token provided');
+      return next(new Error('Authentication error: No token provided'));
+    }
+
+    // Verify JWT token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    if (!decoded) {
+      console.log('❌ Socket connection rejected: Invalid token');
+      return next(new Error('Authentication error: Invalid token'));
+    }
+
+    let userId = decoded.id || decoded.admin_id;
+    let userRole = decoded.role || 'user';
+
+    if (!userId) {
+      console.log('❌ Socket connection rejected: No user ID in token');
+      return next(new Error('Authentication error: No user ID'));
+    }
+
+    // Check if user exists in database
+    const [userRows] = await db.query(
+      'SELECT user_id, name, email FROM Users WHERE user_id = ?',
+      [userId]
+    );
+
+    if (!userRows || userRows.length === 0) {
+      console.log('❌ Socket connection rejected: User not found');
+      return next(new Error('Authentication error: User not found'));
+    }
+
+    // Attach user info to socket
+    socket.user = {
+      id: userId,
+      name: userRows[0].name,
+      email: userRows[0].email,
+      role: userRole
+    };
+
+    console.log(`✅ Socket authenticated for ${userRole}: ${socket.user.name} (${socket.user.id})`);
+    next();
+  } catch (error) {
+    console.log('❌ Socket authentication error:', error.message);
+    next(new Error('Authentication error'));
+  }
+});
+
 // Track active connections by user
 const activeUsers = new Map(); // Map<userId, Set<socketIds>>
 const socketToUser = new Map(); // Map<socketId, userId>
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
-  console.log('🔌 Client connected:', socket.id);
+  console.log('🔌 Client connected:', socket.id, 'User:', socket.user?.name || 'Unknown');
 
-  // Store connection
-  socket.on('user_connected', (userId) => {
+  // Store connection using authenticated user
+  const userId = socket.user?.id;
+  if (userId) {
     if (!activeUsers.has(userId)) {
       activeUsers.set(userId, new Set());
     }
@@ -53,7 +113,7 @@ io.on('connection', (socket) => {
     
     // Notify user is online
     socket.broadcast.emit('user_online', { userId });
-  });
+  }
 
   // Handle disconnect
   socket.on('disconnect', (reason) => {
@@ -75,17 +135,28 @@ io.on('connection', (socket) => {
 
   // Handle new message
   socket.on('message_new', (data) => {
+    console.log(`📨 New message received from ${socket.user?.name}:`, data);
     const { contactId, receiverId, message } = data;
-    console.log(`📨 New message on contact ${contactId} to user ${receiverId}`);
+    console.log(`📨 Processing message on contact ${contactId} to user ${receiverId}: "${message}"`);
     
     // Send to receiver in real-time
     if (activeUsers.has(receiverId)) {
+      console.log(`📨 Sending message to user ${receiverId} (active connections: ${activeUsers.get(receiverId).size})`);
       io.to(`user:${receiverId}`).emit('message_received', {
         contactId,
         message,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        senderName: data.senderName
       });
+    } else {
+      console.log(`⚠️ User ${receiverId} not connected, message not delivered`);
     }
+
+    // Notify all connected clients (including admin) of conversation update
+    io.emit('conversation_updated', {
+      contactId,
+      timestamp: new Date().toISOString()
+    });
   });
 
   // Handle message edited
