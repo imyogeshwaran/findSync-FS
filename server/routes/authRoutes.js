@@ -414,5 +414,79 @@ router.post('/login', async (req, res) => {
 // Backwards-compatible sync endpoint (some frontends call /api/auth/sync)
 router.post('/sync', userController.syncUser);
 
+// ==================== PASSWORD RESET WITH OTP ====================
+const otpService = require('../services/otpService');
+
+// Send OTP to email for password reset
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    console.log(`[OTP Request] Email: ${email}`);
+
+    // Check if user exists
+    const [users] = await db.query('SELECT user_id FROM Users WHERE LOWER(email) = LOWER(?)', [email]);
+    
+    if (!users || users.length === 0) {
+      // Don't reveal if email exists (security)
+      return res.json({ success: true, message: 'If email exists, OTP will be sent' });
+    }
+
+    // Send OTP
+    const result = await otpService.sendOTP(email);
+    return res.json(result);
+  } catch (error) {
+    console.error('Error in forgot-password:', error.message);
+    return res.status(200).json({ 
+      success: false,
+      error: 'Failed to send OTP',
+      details: process.env.NODE_ENV === 'development' ? error.message : 'Please try again later',
+      message: process.env.NODE_ENV === 'development' ? 'Check server console for OTP code' : 'If email is registered, OTP will be sent'
+    });
+  }
+});
+
+// Verify OTP
+router.post('/verify-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ error: 'Email and OTP are required' });
+    }
+
+    const result = await otpService.verifyOTP(email, otp);
+    return res.json(result);
+  } catch (error) {
+    console.error('Error in verify-otp:', error);
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+// Reset password with verified OTP
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { email, newPassword } = req.body;
+
+    if (!email || !newPassword) {
+      return res.status(400).json({ error: 'Email and new password are required' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+    }
+
+    const result = await otpService.resetPassword(email, newPassword);
+    return res.json(result);
+  } catch (error) {
+    console.error('Error in reset-password:', error);
+    return res.status(400).json({ error: error.message });
+  }
+});
+
 module.exports = router;
 
