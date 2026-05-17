@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS Items (
     location VARCHAR(100) NOT NULL,
     image_url VARCHAR(255),
     status ENUM('open', 'matched', 'closed') DEFAULT 'open',
-    approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
+    approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'approved',
     posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES Users(user_id) ON DELETE CASCADE
 )AUTO_INCREMENT = 101;
@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS Contacts (
     item_id INT NOT NULL,
     message TEXT,
     contact_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    read_at TIMESTAMP NULL,
     FOREIGN KEY (sender_id) REFERENCES Users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (receiver_id) REFERENCES Users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (item_id) REFERENCES Items(item_id) ON DELETE CASCADE

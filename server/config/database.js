@@ -70,18 +70,27 @@ setTimeout(async () => {
       console.log('approval_status column not found, adding it...');
       await promisePool.query(`
         ALTER TABLE Items 
-        ADD COLUMN approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending'
+        ADD COLUMN approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'approved'
       `);
       console.log('✅ approval_status column added to Items table');
     } else {
-      console.log('✅ approval_status column already exists');
+      console.log('✅ approval_status column already exists, ensuring default is approved...');
+      try {
+        await promisePool.query(`
+          ALTER TABLE Items 
+          MODIFY COLUMN approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'approved'
+        `);
+        console.log('✅ Column default changed to approved');
+      } catch (err) {
+        console.warn('⚠️ Could not modify column default:', err.message);
+      }
     }
     
     // Update existing items without approval_status to 'approved'
     const [updateResult] = await promisePool.query(`
       UPDATE Items 
       SET approval_status = 'approved' 
-      WHERE approval_status IS NULL OR approval_status = ''
+      WHERE approval_status IS NULL OR approval_status = '' OR approval_status = 'pending'
     `);
     console.log('✅ Database migration complete. Updated rows:', updateResult.affectedRows);
     

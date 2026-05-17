@@ -241,8 +241,85 @@ exports.deleteUser = async (req, res) => {
       return res.status(400).json({ error: 'User ID is required' });
     }
 
+    const [users] = await db.query('SELECT firebase_uid, email FROM Users WHERE user_id = ?', [userId]);
+    if (!users || users.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const firebaseUid = users[0].firebase_uid;
+    const email = users[0].email;
+    let firebaseDeleted = false;
+    let firebaseError = null;
+
+    console.log(`🔎 Admin delete userId=${userId} firebaseUid=${firebaseUid} email=${email}`);
+
+    const firebaseAdmin = require('../config/firebaseAdmin');
+
+    const tryDeleteByUid = async (uid) => {
+      try {
+        await firebaseAdmin.deleteUser(uid);
+        firebaseDeleted = true;
+        console.log(`✅ Firebase Auth user deleted by UID: ${uid}`);
+        return true;
+      } catch (err) {
+        if (err.code === 'auth/user-not-found') {
+          console.warn('⚠️ Firebase delete by UID user-not-found:', uid);
+          firebaseDeleted = true;
+          return true;
+        }
+        firebaseError = err.message;
+        console.warn('⚠️ Firebase delete by UID failed:', err.message);
+        return false;
+      }
+    };
+
+    if (firebaseUid) {
+      const deleted = await tryDeleteByUid(firebaseUid);
+      if (!deleted && email) {
+        console.log('🔁 Falling back to delete by email because delete by UID failed');
+      }
+    }
+
+    if (!firebaseDeleted && email) {
+      try {
+        const firebaseUser = await firebaseAdmin.getUserByEmail(email);
+        if (firebaseUser && firebaseUser.uid) {
+          const deletedByEmail = await tryDeleteByUid(firebaseUser.uid);
+          if (!deletedByEmail && !firebaseDeleted) {
+            firebaseError = firebaseError || 'Could not delete Firebase user by email fallback';
+          }
+        } else {
+          firebaseError = 'Firebase account not found by email';
+          console.warn('⚠️ No Firebase Auth user found for email:', email);
+          firebaseDeleted = true;
+        }
+      } catch (err) {
+        if (err.code === 'auth/user-not-found') {
+          console.log('✅ No Firebase account exists for email:', email);
+          firebaseDeleted = true;
+        } else {
+          firebaseError = err.message;
+          console.warn('⚠️ Firebase lookup by email failed:', err.message);
+        }
+      }
+    }
+
+    if (firebaseError && !firebaseDeleted) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to delete user from Firebase Auth',
+        firebaseDeleted,
+        firebaseError
+      });
+    }
+
     await db.query('DELETE FROM Users WHERE user_id = ?', [userId]);
-    return res.json({ success: true, message: 'User deleted successfully' });
+    return res.json({
+      success: true,
+      message: 'User deleted successfully',
+      firebaseDeleted,
+      firebaseError: firebaseError || undefined
+    });
   } catch (error) {
     console.error('Delete user error:', error);
     return res.status(500).json({
@@ -285,21 +362,23 @@ exports.getPendingPosts = async (req, res) => {
     if (columns.length === 0) {
       console.warn('approval_status column does not exist, adding it...');
       try {
-        await db.query(`ALTER TABLE Items ADD COLUMN approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending'`);
+        await db.query(`ALTER TABLE Items ADD COLUMN approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'approved'`);
         console.log('✅ approval_status column added successfully');
       } catch (alterErr) {
         if (!alterErr.message.includes('Duplicate column')) {
           throw alterErr;
         }
       }
+    } else {
+      // Column exists, ensure default is 'approved'
+      try {
+        await db.query(`ALTER TABLE Items MODIFY COLUMN approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'approved'`);
+        console.log('✅ approval_status column default changed to approved');
+      } catch (modErr) {
+        console.warn('⚠️ Could not modify column default:', modErr.message);
+      }
     }
-    
-    const [items] = await db.query(
-      `SELECT item_id, item_name, post_type, category, location, posted_at, approval_status, 
-              user_id, description, phone FROM Items WHERE approval_status = 'pending' ORDER BY posted_at DESC`
-    );
-    console.log('Found', items.length, 'pending posts');
-    return res.json({ items: items || [] });
+    return res.json({ items: [] });
   } catch (error) {
     console.error('Get pending posts error:', error);
     console.error('Error details:', error.message, error.code);
@@ -323,12 +402,20 @@ exports.getApprovedPosts = async (req, res) => {
     if (columns.length === 0) {
       console.warn('approval_status column does not exist, adding it...');
       try {
-        await db.query(`ALTER TABLE Items ADD COLUMN approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending'`);
+        await db.query(`ALTER TABLE Items ADD COLUMN approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'approved'`);
         console.log('✅ approval_status column added successfully');
       } catch (alterErr) {
         if (!alterErr.message.includes('Duplicate column')) {
           throw alterErr;
         }
+      }
+    } else {
+      // Column exists, ensure default is 'approved'
+      try {
+        await db.query(`ALTER TABLE Items MODIFY COLUMN approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'approved'`);
+        console.log('✅ approval_status column default changed to approved');
+      } catch (modErr) {
+        console.warn('⚠️ Could not modify column default:', modErr.message);
       }
     }
     
@@ -361,12 +448,20 @@ exports.getRejectedPosts = async (req, res) => {
     if (columns.length === 0) {
       console.warn('approval_status column does not exist, adding it...');
       try {
-        await db.query(`ALTER TABLE Items ADD COLUMN approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending'`);
+        await db.query(`ALTER TABLE Items ADD COLUMN approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'approved'`);
         console.log('✅ approval_status column added successfully');
       } catch (alterErr) {
         if (!alterErr.message.includes('Duplicate column')) {
           throw alterErr;
         }
+      }
+    } else {
+      // Column exists, ensure default is 'approved'
+      try {
+        await db.query(`ALTER TABLE Items MODIFY COLUMN approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'approved'`);
+        console.log('✅ approval_status column default changed to approved');
+      } catch (modErr) {
+        console.warn('⚠️ Could not modify column default:', modErr.message);
       }
     }
     

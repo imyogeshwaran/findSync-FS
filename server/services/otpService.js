@@ -242,7 +242,7 @@ const verifyOTP = async (email, otp) => {
   }
 };
 
-// Reset password with verified OTP
+// Reset password with verified OTP (Updates both Database AND Firebase Auth)
 const resetPassword = async (email, newPassword) => {
   try {
     console.log('\n' + '='.repeat(60));
@@ -271,9 +271,12 @@ const resetPassword = async (email, newPassword) => {
 
     console.log('✓ OTP is verified');
 
-    // Step 2: Check if user exists
-    console.log('\n👤 Step 2 - Checking if user exists...');
-    const [users] = await db.query('SELECT user_id FROM Users WHERE LOWER(email) = LOWER(?)', [email]);
+    // Step 2: Check if user exists and get Firebase UID
+    console.log('\n👤 Step 2 - Checking if user exists and fetching Firebase UID...');
+    const [users] = await db.query(
+      'SELECT user_id, firebase_uid FROM Users WHERE LOWER(email) = LOWER(?)',
+      [email]
+    );
 
     if (!users || users.length === 0) {
       console.error('❌ User not found for email:', email);
@@ -281,10 +284,12 @@ const resetPassword = async (email, newPassword) => {
     }
 
     const userId = users[0].user_id;
+    const firebaseUid = users[0].firebase_uid;
     console.log('✓ User found');
     console.log('  - User ID:', userId);
+    console.log('  - Firebase UID:', firebaseUid ? '✓ FOUND' : '⚠️  NOT SET');
 
-    // Step 3: Hash new password
+    // Step 3: Hash new password for database
     console.log('\n🔐 Step 3 - Hashing new password...');
     const bcrypt = require('bcrypt');
     let hashedPassword;
@@ -297,23 +302,48 @@ const resetPassword = async (email, newPassword) => {
       throw new Error('Failed to hash password: ' + hashError.message);
     }
 
-    // Step 4: Update password in database
-    console.log('\n💾 Step 4 - Updating password in database...');
+    // Step 4: Update password in Firebase Auth (if Firebase UID exists)
+    console.log('\n🔥 Step 4 - Updating password in Firebase Auth...');
+    let firebaseUpdateSuccess = false;
+    if (firebaseUid) {
+      try {
+        const firebaseAdmin = require('../config/firebaseAdmin');
+        console.log('  - Attempting to initialize Firebase Admin...');
+        firebaseAdmin.initializeFirebaseAdmin();
+        
+        console.log('  - Updating Firebase Auth for UID:', firebaseUid);
+        const updateResult = await firebaseAdmin.updateUserPassword(firebaseUid, newPassword);
+        console.log('✓ Firebase Auth password updated successfully');
+        firebaseUpdateSuccess = true;
+      } catch (firebaseError) {
+        console.warn('⚠️  Warning - Firebase Auth update failed');
+        console.warn('   Error:', firebaseError.message);
+        console.warn('   The password WILL be updated in the database, but not in Firebase Auth');
+        console.warn('   Recommendation: Check Firebase setup in .env');
+        // Don't throw - continue with database update as fallback
+      }
+    } else {
+      console.warn('⚠️  Warning - No Firebase UID found for this user');
+      console.warn('   Password will only be updated in database');
+    }
+
+    // Step 5: Update password in database
+    console.log('\n💾 Step 5 - Updating password in database...');
     try {
       const [updateResult] = await db.query(
         'UPDATE Users SET password = ? WHERE LOWER(email) = LOWER(?)',
         [hashedPassword, email]
       );
-      console.log('✓ Password updated');
+      console.log('✓ Password updated in database');
       console.log('  - Affected Rows:', updateResult.affectedRows);
       console.log('  - Changed Rows:', updateResult.changedRows);
     } catch (updateError) {
-      console.error('❌ Error updating password:', updateError.message);
-      throw new Error('Failed to update password: ' + updateError.message);
+      console.error('❌ Error updating password in database:', updateError.message);
+      throw new Error('Failed to update password in database: ' + updateError.message);
     }
 
-    // Step 5: Delete OTP record
-    console.log('\n🧹 Step 5 - Cleaning up OTP record...');
+    // Step 6: Delete OTP record
+    console.log('\n🧹 Step 6 - Cleaning up OTP record...');
     try {
       const [deleteResult] = await db.query('DELETE FROM password_reset_otp WHERE email = ?', [email]);
       console.log('✓ OTP record deleted');
@@ -325,9 +355,25 @@ const resetPassword = async (email, newPassword) => {
 
     console.log('\n' + '='.repeat(60));
     console.log('✅ PASSWORD RESET COMPLETED SUCCESSFULLY');
+    if (firebaseUpdateSuccess) {
+      console.log('   Password updated in BOTH Firebase Auth and Database ✓');
+    } else if (firebaseUid) {
+      console.log('   Password updated in Database only ⚠️');
+      console.log('   (Firebase Auth update failed - see above for details)');
+    } else {
+      console.log('   Password updated in Database only');
+      console.log('   (No Firebase UID found)');
+    }
     console.log('='.repeat(60) + '\n');
 
-    return { success: true, message: 'Password reset successfully. You can now log in with your new password.' };
+    return { 
+      success: true, 
+      message: 'Password reset successfully. You can now log in with your new password.',
+      details: {
+        databaseUpdated: true,
+        firebaseUpdated: firebaseUpdateSuccess
+      }
+    };
   } catch (error) {
     console.error('\n' + '='.repeat(60));
     console.error('❌ PASSWORD RESET FAILED');

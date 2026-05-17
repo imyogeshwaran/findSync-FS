@@ -81,8 +81,11 @@ exports.getNotificationCount = async (req, res) => {
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
     const [rows] = await db.query(
-      `SELECT COUNT(*) as unread_count FROM Contacts WHERE receiver_id = ?`,
-      [userId]
+      `SELECT (
+          (SELECT COUNT(*) FROM Contacts WHERE receiver_id = ? AND read_at IS NULL) + 
+          (SELECT COUNT(*) FROM Messages WHERE receiver_id = ? AND read_at IS NULL)
+        ) as unread_count`,
+      [userId, userId]
     );
 
     const count = rows[0].unread_count || 0;
@@ -90,6 +93,31 @@ exports.getNotificationCount = async (req, res) => {
   } catch (err) {
     console.error('Error fetching notification count:', err.message);
     res.status(500).json({ error: 'Failed to fetch notification count', details: err.message });
+  }
+};
+
+// Mark all unread notifications/messages as read for the current user
+exports.markNotificationsRead = async (req, res) => {
+  try {
+    const userId = req.user && req.user.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+    const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+
+    await db.query(
+      `UPDATE Contacts SET read_at = ? WHERE receiver_id = ? AND read_at IS NULL`,
+      [now, userId]
+    );
+
+    await db.query(
+      `UPDATE Messages SET read_at = ? WHERE receiver_id = ? AND read_at IS NULL`,
+      [now, userId]
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error marking notifications read:', err.message);
+    res.status(500).json({ error: 'Failed to mark notifications read', details: err.message });
   }
 };
 
@@ -154,6 +182,20 @@ exports.getConversationHistory = async (req, res) => {
     );
 
     console.log(`📜 Retrieved conversation history: ${messages.length} messages between user ${userId} and ${otherUserId} about item ${itemId}`);
+
+    try {
+      const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      await db.query(
+        `UPDATE Contacts SET read_at = ?
+         WHERE receiver_id = ?
+           AND item_id = ?
+           AND sender_id = ?
+           AND read_at IS NULL`,
+        [now, userId, itemId, otherUserId]
+      );
+    } catch (updateErr) {
+      console.error('Error marking conversation as read:', updateErr.message);
+    }
 
     res.json({ success: true, messages: messages || [] });
   } catch (err) {

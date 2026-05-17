@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 require('dotenv').config();
 console.log('Loading initializeDatabase module...');
 const initializeDatabase = require('./config/initDatabase');
@@ -8,12 +9,14 @@ const path = require('path');
 const http = require('http');
 
 console.log('Starting server...');
-console.log('Environment variables:', {
-  DB_HOST: process.env.DB_HOST,
-  DB_USER: process.env.DB_USER,
-  DB_NAME: process.env.DB_NAME,
-  PORT: process.env.PORT
-});
+if (process.env.NODE_ENV !== 'production') {
+  console.log('Environment variables:', {
+    DB_HOST: process.env.DB_HOST,
+    DB_USER: process.env.DB_USER,
+    DB_NAME: process.env.DB_NAME,
+    PORT: process.env.PORT
+  });
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -32,6 +35,14 @@ const io = new Server(server, {
 
 // Attach io to app so controllers can access it
 app.set('io', io);
+
+// Security middleware
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
+}));
+app.set('trust proxy', 1);
 
 // Socket.IO authentication middleware
 const jwt = require('jsonwebtoken');
@@ -234,6 +245,16 @@ io.engine.on("connection_error", (err) => {
 app.set('io', io);
 
 // Middleware
+if (process.env.NODE_ENV === 'production') {
+  app.use((req, res, next) => {
+    const proto = req.headers['x-forwarded-proto'];
+    if (proto && proto !== 'https') {
+      return res.redirect(301, `https://${req.hostname}${req.originalUrl}`);
+    }
+    next();
+  });
+}
+
 app.use(cors({
   origin: ['http://localhost:5174', 'http://127.0.0.1:5174'],
   credentials: true,
@@ -243,9 +264,6 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// Serve static files from the public directory
-app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
 
 // Serve uploaded files from /uploads
 const uploadsPath = path.join(__dirname, 'public', 'uploads');
@@ -257,12 +275,21 @@ app.use((req, res, next) => {
     next();
 });
 
-// Serve static files from uploads directory
-app.use('/uploads', (req, res, next) => {
-    console.log('Static file request for:', req.url);
-    console.log('Full path:', path.join(uploadsPath, req.url));
-    next();
-}, express.static(uploadsPath));
+// Serve static files from uploads directory and ensure CORS/CORP headers
+const allowedUploadOrigins = ['http://localhost:5174', 'http://127.0.0.1:5174'];
+app.use('/uploads', express.static(uploadsPath, {
+  setHeaders: (res, filePath, stat) => {
+    const origin = res.req.get('Origin');
+    if (allowedUploadOrigins.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      // Make caching vary by origin to avoid leaking headers across origins
+      res.setHeader('Vary', 'Origin');
+    }
+    // Allow cross-origin embedding of images (for COEP/COOP contexts)
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  }
+}));
 
 // Add a route to debug image serving
 // app.get('/uploads/:filename', (req, res, next) => {

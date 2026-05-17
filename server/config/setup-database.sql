@@ -45,6 +45,7 @@ CREATE TABLE Contacts (
     item_id INT NOT NULL,
     message TEXT,
     contact_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    read_at TIMESTAMP NULL,
     FOREIGN KEY (sender_id) REFERENCES Users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (receiver_id) REFERENCES Users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (item_id) REFERENCES Items(item_id) ON DELETE CASCADE,

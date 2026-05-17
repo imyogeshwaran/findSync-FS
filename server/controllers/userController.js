@@ -3,6 +3,12 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 require('dotenv').config();
 
+const isValidMobileNumber = (mobile) => {
+  if (!mobile) return false;
+  const digits = mobile.replace(/\D/g, '');
+  return digits.length === 10;
+};
+
 // Sync Firebase user to MySQL
 exports.syncUser = async (req, res) => {
   try {
@@ -43,8 +49,11 @@ exports.syncUser = async (req, res) => {
         updateValues.push(email);
       }
       if (normalizedMobile) {
+        if (!isValidMobileNumber(normalizedMobile)) {
+          return res.status(400).json({ error: 'Mobile number must be exactly 10 digits' });
+        }
         updateFields.push('mobile = ?');
-        updateValues.push(normalizedMobile);
+        updateValues.push(normalizedMobile.replace(/\D/g, ''));
       }
       if (password) {
         // Hash password before storing
@@ -59,6 +68,15 @@ exports.syncUser = async (req, res) => {
           `UPDATE Users SET ${updateFields.join(', ')} WHERE firebase_uid = ?`,
           updateValues
         );
+
+        if (password && firebase_uid) {
+          try {
+            const firebaseAdmin = require('../config/firebaseAdmin');
+            await firebaseAdmin.updateUserPassword(firebase_uid, password);
+          } catch (firebaseError) {
+            console.warn('⚠️ Firebase password update failed during syncUser:', firebaseError.message);
+          }
+        }
       }
 
       // Re-read the user row so we return the actual saved values
@@ -76,6 +94,10 @@ exports.syncUser = async (req, res) => {
       };
     } else {
       // Insert new user with all fields
+      if (normalizedMobile && !isValidMobileNumber(normalizedMobile)) {
+        return res.status(400).json({ error: 'Mobile number must be exactly 10 digits' });
+      }
+
       const insertSql = `
         INSERT INTO Users (
           firebase_uid, name, email, mobile, password
@@ -85,12 +107,13 @@ exports.syncUser = async (req, res) => {
 
       // Hash password before insert if provided
       const hashedPassword = password ? await bcrypt.hash(password, 10) : null;
+      const storedMobile = normalizedMobile ? normalizedMobile.replace(/\D/g, '') : null;
       // If name is not meaningful (e.g. 'User') store NULL so we don't persist a placeholder
       const insertValues = [
         firebase_uid,
         name && name !== 'User' ? name : null,
         email,
-        normalizedMobile,
+        storedMobile,
         hashedPassword
       ];
 
@@ -196,10 +219,8 @@ exports.updateMobileNumber = async (req, res) => {
 
     if (!userId) {
       console.error('❌ User ID not found');
-      console.log('Available in req.user:', req.user);
       return res.status(400).json({ 
-        error: 'User ID not found in token',
-        debug: req.user
+        error: 'User ID not found in token'
       });
     }
 
@@ -207,16 +228,18 @@ exports.updateMobileNumber = async (req, res) => {
       return res.status(400).json({ error: 'Mobile number is required' });
     }
 
-    if (mobile.length < 10) {
-      return res.status(400).json({ error: 'Mobile number must be at least 10 digits' });
+    if (!isValidMobileNumber(mobile)) {
+      return res.status(400).json({ error: 'Mobile number must be exactly 10 digits' });
     }
+
+    const normalizedMobile = mobile.replace(/\D/g, '');
 
     console.log('🔄 Updating mobile for userId:', userId);
 
     // Update the user's mobile number
     const [result] = await db.query(
       'UPDATE Users SET mobile = ? WHERE user_id = ?',
-      [mobile, userId]
+      [normalizedMobile, userId]
     );
 
     console.log('✅ Update result:', result);
@@ -244,12 +267,74 @@ exports.updateMobileNumber = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('❌ Error updating mobile number:', error);
-    console.error('Stack:', error.stack);
+    console.error('❌ Error updating mobile number:', error.message);
     res.status(500).json({ 
       error: 'Failed to update mobile number', 
-      details: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Change user password and keep Firebase Auth in sync
+exports.changePassword = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const { currentPassword, newPassword } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID not found in token' });
+    }
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters long' });
+    }
+
+    const [users] = await db.query(
+      'SELECT user_id, firebase_uid, password FROM Users WHERE user_id = ?',
+      [userId]
+    );
+
+    if (!users || users.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = users[0];
+    const hasDbPassword = !!user.password;
+
+    if (hasDbPassword) {
+      if (!currentPassword) {
+        return res.status(400).json({ error: 'Current password is required' });
+      }
+      const passwordMatches = await bcrypt.compare(currentPassword, user.password);
+      if (!passwordMatches) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+      }
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await db.query('UPDATE Users SET password = ? WHERE user_id = ?', [hashedPassword, userId]);
+
+    let firebaseUpdated = false;
+    if (user.firebase_uid) {
+      try {
+        const firebaseAdmin = require('../config/firebaseAdmin');
+        await firebaseAdmin.updateUserPassword(user.firebase_uid, newPassword);
+        firebaseUpdated = true;
+      } catch (firebaseError) {
+        console.warn('⚠️ Firebase password update failed during changePassword:', firebaseError.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Password updated successfully',
+      firebaseUpdated
+    });
+  } catch (error) {
+    console.error('❌ Error changing password:', error.message);
+    res.status(500).json({
+      error: 'Failed to change password',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };

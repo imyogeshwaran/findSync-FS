@@ -4,11 +4,12 @@ const jwt = require('jsonwebtoken');
 const db = require('../config/database');
 const userController = require('../controllers/userController');
 const bcrypt = require('bcrypt');
+const { authLimiter, sensitiveAuthLimiter } = require('../middleware/rateLimiter');
 require('dotenv').config();
 
 // ==================== ADMIN LOGIN ENDPOINT ====================
 // Dedicated endpoint for admin authentication with role validation
-router.post('/admin/login', async (req, res) => {
+router.post('/admin/login', authLimiter, async (req, res) => {
   try {
     const { username, email, password } = req.body;
 
@@ -79,9 +80,8 @@ router.post('/admin/login', async (req, res) => {
 });
 
 // ==================== USER SIGNUP ENDPOINT ====================
-router.post('/signup', async (req, res) => {
+router.post('/signup', authLimiter, async (req, res) => {
   try {
-    console.log('auth/signup called with body:', req.body);
     // Accept `mobile` or `phone` from different clients
     const { firebase_uid, name, email, mobile, phone, password } = req.body;
     const normalizedMobile = mobile || phone || null;
@@ -98,13 +98,6 @@ router.post('/signup', async (req, res) => {
     
     if (existingUsers && existingUsers.length > 0) {
       const matchedUser = existingUsers[0];
-      console.log('User exists, updating profile:', {
-        attemptedEmail: email.toLowerCase(),
-        existingEmail: matchedUser.email.toLowerCase(),
-        emailMatch: email.toLowerCase() === matchedUser.email.toLowerCase(),
-        attemptedFirebaseUid: firebase_uid,
-        matchedUserId: matchedUser.user_id
-      });
 
       // Update the user's information
       const updateSql = `
@@ -120,7 +113,6 @@ router.post('/signup', async (req, res) => {
       try {
         const hashedPassword = password ? await bcrypt.hash(password, 10) : null;
         await db.query(updateSql, [name, normalizedMobile, hashedPassword, matchedUser.user_id]);
-        console.log('Updated user profile successfully');
 
         // Generate JWT for the existing user
         // Re-query user to include mobile and any updated fields
@@ -178,21 +170,16 @@ router.post('/signup', async (req, res) => {
       'user'  // Default role for new users
     ];
 
-    console.log('Executing INSERT with SQL:', insertSql);
-    console.log('Values:', values);
-
     let userId;
     
     try {
       const [result] = await db.query(insertSql, values);
-      console.log('INSERT successful, insertId:', result.insertId);
       userId = result.insertId;
     } catch (dbError) {
-      console.error('Database error during INSERT:', dbError);
+      console.error('Database error during INSERT:', dbError.message);
       // Try fallback without mobile/phone if the first attempt fails
       if (dbError.code === 'ER_BAD_FIELD_ERROR') {
-        console.log('Retrying INSERT without mobile/phone columns...');
-        const fallbackSql = `
+          const fallbackSql = `
           INSERT INTO Users (
             firebase_uid, name, email, password, role
           ) VALUES (
@@ -261,7 +248,7 @@ router.post('/signup', async (req, res) => {
 
 // Route for handling Google/Firebase authentication
 // This endpoint will ensure the user exists in the database and return a JWT
-router.post('/login', async (req, res) => {
+router.post('/login', authLimiter, async (req, res) => {
   try {
     const { email, password, firebase_uid, name, id_token } = req.body;
 
@@ -418,171 +405,78 @@ router.post('/sync', userController.syncUser);
 const otpService = require('../services/otpService');
 
 // Send OTP to email for password reset
-router.post('/forgot-password', async (req, res) => {
+router.post('/forgot-password', sensitiveAuthLimiter, async (req, res) => {
   try {
     const { email } = req.body;
 
-    console.log('\n' + '='.repeat(60));
-    console.log('📬 [FORGOT-PASSWORD ROUTE] Request received');
-    console.log('='.repeat(60));
-    console.log('⏰ Timestamp:', new Date().toISOString());
-    console.log('📧 Email Provided:', email ? 'YES' : 'NO');
-    if (email) console.log('   Value:', email);
-
     if (!email) {
-      console.warn('❌ Email validation failed - Email is required');
       return res.status(400).json({ error: 'Email is required' });
     }
 
-    // Step 1: Validate email format
-    console.log('\n📋 Step 1 - Email format validation');
+    // Validate email format and preserve generic responses
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
-      console.warn('❌ Invalid email format:', email);
       return res.status(400).json({ error: 'Invalid email format' });
     }
-    console.log('✓ Email format is valid');
 
-    // Step 2: Check if user exists
-    console.log('\n👤 Step 2 - Checking if user exists in database');
     const [users] = await db.query(
-      'SELECT user_id, name FROM Users WHERE LOWER(email) = LOWER(?)',
+      'SELECT user_id FROM Users WHERE LOWER(email) = LOWER(?)',
       [email]
     );
-    
-    console.log('  - Users found:', users ? users.length : 0);
-    if (users && users.length > 0) {
-      console.log('  ✓ User exists in database');
-      console.log('    - User ID:', users[0].user_id);
-      console.log('    - Name:', users[0].name || 'Not set');
-    } else {
-      console.warn('  ⚠️  User not found for email:', email);
-      // For security, don't reveal if email exists
-      console.log('  📌 Sending generic success response (security measure)');
-      return res.json({ 
-        success: true, 
-        message: 'If this email is registered, you will receive an OTP shortly' 
+
+    if (!users || users.length === 0) {
+      return res.json({
+        success: true,
+        message: 'If this email is registered, you will receive an OTP shortly'
       });
     }
 
-    // Step 3: Send OTP
-    console.log('\n🚀 Step 3 - Sending OTP via otpService');
     const result = await otpService.sendOTP(email);
-    
-    console.log('📤 OTP Send Result:', JSON.stringify(result, null, 2));
-    console.log('\n' + '='.repeat(60));
-    console.log('✅ FORGOT-PASSWORD ROUTE COMPLETED');
-    console.log('='.repeat(60) + '\n');
-    
     return res.json(result);
   } catch (error) {
-    console.error('\n' + '='.repeat(60));
-    console.error('❌ ERROR IN FORGOT-PASSWORD ROUTE');
-    console.error('='.repeat(60));
-    console.error('Error Message:', error.message);
-    console.error('Error Stack:', error.stack);
-    console.error('Full Error:', error);
-    console.error('='.repeat(60) + '\n');
-    
-    return res.status(200).json({ 
+    console.error('[FORGOT-PASSWORD ERROR]', error.message);
+    return res.status(500).json({
       success: false,
-      error: 'Failed to send OTP',
-      details: process.env.NODE_ENV === 'development' ? error.message : 'Please try again later',
-      message: process.env.NODE_ENV === 'development' ? 'Check server console for detailed error' : 'If email is registered, OTP will be sent'
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Failed to send OTP'
     });
   }
 });
 
 // Verify OTP
-router.post('/verify-otp', async (req, res) => {
+router.post('/verify-otp', sensitiveAuthLimiter, async (req, res) => {
   try {
     const { email, otp } = req.body;
-
-    console.log('\n' + '='.repeat(60));
-    console.log('🔐 [VERIFY-OTP ROUTE] Request received');
-    console.log('='.repeat(60));
-    console.log('⏰ Timestamp:', new Date().toISOString());
-    console.log('📧 Email Provided:', email ? 'YES' : 'NO');
-    console.log('🔐 OTP Provided:', otp ? 'YES (length: ' + otp.length + ')' : 'NO');
-
     if (!email || !otp) {
-      console.warn('❌ Validation failed - Email and OTP are required');
-      console.warn('  - Email:', email ? 'provided' : 'MISSING');
-      console.warn('  - OTP:', otp ? 'provided' : 'MISSING');
       return res.status(400).json({ error: 'Email and OTP are required' });
     }
 
-    console.log('✓ All required fields present');
-    console.log('\n🚀 Calling otpService.verifyOTP...');
-    
     const result = await otpService.verifyOTP(email, otp);
-    
-    console.log('📤 Verification Result:', JSON.stringify(result, null, 2));
-    console.log('\n' + '='.repeat(60));
-    console.log('✅ VERIFY-OTP ROUTE COMPLETED');
-    console.log('='.repeat(60) + '\n');
-    
     return res.json(result);
   } catch (error) {
-    console.error('\n' + '='.repeat(60));
-    console.error('❌ ERROR IN VERIFY-OTP ROUTE');
-    console.error('='.repeat(60));
-    console.error('Error Message:', error.message);
-    console.error('Error Stack:', error.stack);
-    console.error('='.repeat(60) + '\n');
-    
-    return res.status(400).json({ 
-      error: error.message || 'Failed to verify OTP',
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    console.error('[VERIFY-OTP ERROR]', error.message);
+    return res.status(400).json({
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Failed to verify OTP'
     });
   }
 });
 
 // Reset password with verified OTP
-router.post('/reset-password', async (req, res) => {
+router.post('/reset-password', sensitiveAuthLimiter, async (req, res) => {
   try {
-    const { email, newPassword, confirmPassword } = req.body;
-
-    console.log('\n' + '='.repeat(60));
-    console.log('🔑 [RESET-PASSWORD ROUTE] Request received');
-    console.log('='.repeat(60));
-    console.log('⏰ Timestamp:', new Date().toISOString());
-    console.log('📧 Email Provided:', email ? 'YES' : 'NO');
-    console.log('🔐 Password Provided:', newPassword ? 'YES (length: ' + newPassword.length + ')' : 'NO');
-
+    const { email, newPassword } = req.body;
     if (!email || !newPassword) {
-      console.warn('❌ Validation failed - Email and new password are required');
       return res.status(400).json({ error: 'Email and new password are required' });
     }
-
     if (newPassword.length < 6) {
-      console.warn('❌ Password validation failed - Password too short');
-      console.warn('  - Length provided:', newPassword.length, '(minimum required: 6)');
       return res.status(400).json({ error: 'Password must be at least 6 characters long' });
     }
 
-    console.log('✓ All validations passed');
-    console.log('\n🚀 Calling otpService.resetPassword...');
-    
     const result = await otpService.resetPassword(email, newPassword);
-    
-    console.log('📤 Reset Result:', JSON.stringify(result, null, 2));
-    console.log('\n' + '='.repeat(60));
-    console.log('✅ RESET-PASSWORD ROUTE COMPLETED');
-    console.log('='.repeat(60) + '\n');
-    
     return res.json(result);
   } catch (error) {
-    console.error('\n' + '='.repeat(60));
-    console.error('❌ ERROR IN RESET-PASSWORD ROUTE');
-    console.error('='.repeat(60));
-    console.error('Error Message:', error.message);
-    console.error('Error Stack:', error.stack);
-    console.error('='.repeat(60) + '\n');
-    
-    return res.status(400).json({ 
-      error: error.message || 'Failed to reset password',
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    console.error('[RESET-PASSWORD ERROR]', error.message);
+    return res.status(400).json({
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Failed to reset password'
     });
   }
 });

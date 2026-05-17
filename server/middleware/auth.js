@@ -10,27 +10,13 @@ const auth = async (req, res, next) => {
     const authHeader = req.header('Authorization') || req.header('authorization') || '';
     const token = authHeader.replace(/^Bearer\s+/i, '').trim();
 
-    console.log('🔐 Auth middleware check:', {
-      path: req.path,
-      authHeader: authHeader ? 'Present' : 'Missing',
-      token: token ? `Found (length: ${token.length})` : 'Missing',
-      headers: Object.keys(req.headers)
-    });
-
     if (!token) {
-      console.error('❌ Auth failed: No token provided');
       return res.status(401).json({ error: 'No authentication token, access denied' });
     }
 
     // Verify token
     const jwtSecret = process.env.JWT_SECRET || 'dev-secret';
     const decoded = jwt.verify(token, jwtSecret);
-
-    console.log('✅ Token verified:', {
-      id: decoded.id,
-      firebase_uid: decoded.firebase_uid,
-      email: decoded.email
-    });
 
     // If token doesn't include numeric DB id but has firebase_uid, try to resolve it
     if ((!decoded.id || decoded.id === null) && decoded.firebase_uid) {
