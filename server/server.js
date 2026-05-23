@@ -10,11 +10,11 @@ const http = require('http');
 
 console.log('Starting server...');
 if (process.env.NODE_ENV !== 'production') {
-  console.log('Environment variables:', {
-    DB_HOST: process.env.DB_HOST,
-    DB_USER: process.env.DB_USER,
-    DB_NAME: process.env.DB_NAME,
-    PORT: process.env.PORT
+  console.log('Environment variables set:', {
+    DB_HOST: !!process.env.DB_HOST,
+    DB_USER: !!process.env.DB_USER,
+    DB_NAME: !!process.env.DB_NAME,
+    PORT: process.env.PORT || '3005'
   });
 }
 

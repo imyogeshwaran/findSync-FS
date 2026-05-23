@@ -247,11 +247,10 @@ exports.deleteUser = async (req, res) => {
     }
 
     const firebaseUid = users[0].firebase_uid;
-    const email = users[0].email;
     let firebaseDeleted = false;
     let firebaseError = null;
 
-    console.log(`🔎 Admin delete userId=${userId} firebaseUid=${firebaseUid} email=${email}`);
+    console.log('🔎 Admin delete user request:', { userId });
 
     const firebaseAdmin = require('../config/firebaseAdmin');
 

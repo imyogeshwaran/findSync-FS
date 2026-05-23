@@ -3,9 +3,6 @@ const router = express.Router();
 const adminController = require('../controllers/adminController');
 const { verifyAdminToken, auditLog } = require('../middleware/authMiddleware');
 
-console.log('✅ Admin routes module loaded');
-console.log('Admin controller methods available:', Object.keys(adminController));
-
 // Admin login (no auth required)
 router.post('/login', auditLog('ADMIN_LOGIN_ATTEMPT'), adminController.login);
 
@@ -24,12 +21,8 @@ router.put('/posts/:itemId/approve', auditLog('ADMIN_APPROVE_POST'), verifyAdmin
 router.put('/posts/:itemId/reject', auditLog('ADMIN_REJECT_POST'), verifyAdminToken, adminController.rejectPost);
 
 // Conversation management routes
-console.log('Registering conversation routes...');
 router.get('/conversations', auditLog('ADMIN_VIEW_CONVERSATIONS'), verifyAdminToken, adminController.getAllConversations);
-console.log('Registered GET /conversations route');
 router.get('/conversations/:contactId/messages', auditLog('ADMIN_VIEW_CONVERSATION_MESSAGES'), verifyAdminToken, adminController.getConversationMessages);
-console.log('Registered GET /conversations/:contactId/messages route');
 router.delete('/conversations/:contactId/messages/:messageId', auditLog('ADMIN_DELETE_MESSAGE'), verifyAdminToken, adminController.adminDeleteMessage);
-console.log('Registered DELETE /conversations/:contactId/messages/:messageId route');
 
 module.exports = router;

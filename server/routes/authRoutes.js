@@ -442,6 +442,38 @@ router.post('/forgot-password', sensitiveAuthLimiter, async (req, res) => {
   }
 });
 
+// Resend OTP for password reset
+router.post('/resend-otp', sensitiveAuthLimiter, async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const [users] = await db.query(
+      'SELECT user_id FROM Users WHERE LOWER(email) = LOWER(?)',
+      [email]
+    );
+
+    if (!users || users.length === 0) {
+      return res.json({
+        success: true,
+        message: 'If this email is registered, you will receive a new OTP shortly'
+      });
+    }
+
+    const result = await otpService.sendOTP(email);
+    return res.json(result);
+  } catch (error) {
+    console.error('[RESEND-OTP ERROR]', error.message);
+    return res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Failed to resend OTP'
+    });
+  }
+});
+
 // Verify OTP
 router.post('/verify-otp', sensitiveAuthLimiter, async (req, res) => {
   try {

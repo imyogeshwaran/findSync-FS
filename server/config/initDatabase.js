@@ -8,9 +8,9 @@ async function initializeDatabase() {
   try {
     console.log('🔄 Checking database for existing schema...');
     console.log('Database config:', {
-      host: process.env.DB_HOST,
-      user: process.env.DB_USER,
-      database: process.env.DB_NAME
+      host: process.env.DB_HOST ? '[SET]' : '[NOT SET]',
+      user: process.env.DB_USER ? '[SET]' : '[NOT SET]',
+      database: process.env.DB_NAME ? '[SET]' : '[NOT SET]'
     });
 
     // Check database connection first

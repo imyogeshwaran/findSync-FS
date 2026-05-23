@@ -1,12 +1,11 @@
 const mysql = require('mysql2');
 require('dotenv').config();
 
-console.log('Testing database connection with config:', {
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD ? '****' : 'NOT SET',
-  database: process.env.DB_NAME
-});
+console.log('Testing database connection with config:');
+console.log('  DB_HOST:', process.env.DB_HOST ? '[SET]' : '[NOT SET]');
+console.log('  DB_USER:', process.env.DB_USER ? '[SET]' : '[NOT SET]');
+console.log('  DB_PASSWORD:', process.env.DB_PASSWORD ? '[SET]' : '[NOT SET]');
+console.log('  DB_NAME:', process.env.DB_NAME ? '[SET]' : '[NOT SET]');
 
 const connection = mysql.createConnection({
   host: process.env.DB_HOST,

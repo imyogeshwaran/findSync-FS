@@ -3,10 +3,10 @@ require('dotenv').config();
 
 // Create a connection pool
 console.log('Creating MySQL connection pool with config:', {
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
+  host: process.env.DB_HOST ? '[SET]' : '[NOT SET]',
+  user: process.env.DB_USER ? '[SET]' : '[NOT SET]',
   password: process.env.DB_PASSWORD ? '****' : 'NOT SET',
-  database: process.env.DB_NAME,
+  database: process.env.DB_NAME ? '[SET]' : '[NOT SET]',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0

@@ -30,7 +30,9 @@ exports.createContact = async (req, res) => {
       [senderId, receiverId, item_id, message]
     );
 
-    console.log(`📨 Message saved: senderId=${senderId}, receiverId=${receiverId}, itemId=${item_id}, contactId=${result.insertId}`);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('📨 Message saved for item:', item_id);
+    }
 
     // Emit real-time notification to receiver
     const io = req.app.get('io');
@@ -39,7 +41,9 @@ exports.createContact = async (req, res) => {
         itemId: item_id,
         timestamp: new Date().toISOString()
       });
-      console.log(`📨 Emitted conversation_updated for item ${item_id}`);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('📨 Emitted conversation_updated for item', item_id);
+      }
     }
 
     res.json({ success: true, contact_id: result.insertId });
@@ -164,7 +168,9 @@ exports.getConversationHistory = async (req, res) => {
     const userId = req.user && req.user.id;
     const { otherUserId, itemId } = req.query;
     
-    console.log('🔍 getConversationHistory called with:', { userId, otherUserId, itemId, path: req.path, query: req.query });
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('🔍 getConversationHistory called for item:', itemId);
+    }
     
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
     if (!otherUserId || !itemId) return res.status(400).json({ error: 'otherUserId and itemId are required' });
@@ -181,7 +187,9 @@ exports.getConversationHistory = async (req, res) => {
       [itemId, userId, otherUserId, otherUserId, userId]
     );
 
-    console.log(`📜 Retrieved conversation history: ${messages.length} messages between user ${userId} and ${otherUserId} about item ${itemId}`);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`📜 Retrieved ${messages.length} messages for item ${itemId}`);
+    }
 
     try {
       const now = new Date().toISOString().slice(0, 19).replace('T', ' ');

@@ -2,8 +2,6 @@ const nodemailer = require('nodemailer');
 require('dotenv').config();
 
 console.log('Testing Gmail configuration...');
-console.log('GMAIL_USER:', process.env.GMAIL_USER);
-console.log('GMAIL_PASSWORD length:', process.env.GMAIL_PASSWORD?.length);
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',

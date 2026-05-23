@@ -192,14 +192,14 @@ const testGmailConnection = async () => {
       if (error) {
         console.error('❌ FAILED - Gmail connection error:', error.message);
         console.log('\nPossible Solutions:');
-        console.log('1. Check if GMAIL_USER is correct: ' + process.env.GMAIL_USER);
+        console.log('1. Check if GMAIL_USER is set');
         console.log('2. Check if GMAIL_PASSWORD is a valid App Password');
         console.log('3. Enable 2FA on your Google Account');
         console.log('4. Generate new App Password from: https://myaccount.google.com/apppasswords');
         console.log('5. Check internet connection');
       } else {
         console.log('✅ PASSED - Gmail SMTP server is ready');
-        console.log('   Email Address: ' + process.env.GMAIL_USER);
+        console.log('   Gmail credentials are configured');
         console.log('\n🔍 Step 3: Sending test email...');
 
         const mailOptions = {
@@ -278,11 +278,11 @@ const testDatabaseConnection = async () => {
   } catch (error) {
     console.error('❌ FAILED - Database connection error:', error.message);
     console.log('\nPossible Solutions:');
-    console.log('1. Check DB_HOST in .env:', process.env.DB_HOST);
-    console.log('2. Check DB_USER in .env:', process.env.DB_USER);
-    console.log('3. Check DB_PASSWORD in .env (length: ' + (process.env.DB_PASSWORD?.length || 0) + ')');
+    console.log('1. Check DB_HOST is set');
+    console.log('2. Check DB_USER is set');
+    console.log('3. Check DB_PASSWORD is set');
     console.log('4. Check if MySQL server is running');
-    console.log('5. Verify database exists:', process.env.DB_NAME);
+    console.log('5. Verify DB_NAME is set and database exists');
   }
 };
 
@@ -439,9 +439,10 @@ const viewDebugLogs = async () => {
   console.log('ISSUE: Email not being sent');
   console.log('-------');
   console.log('1. Check if Gmail credentials are correct:');
-  console.log('   GMAIL_USER=' + process.env.GMAIL_USER);
+  console.log('   GMAIL_USER=' + (process.env.GMAIL_USER ? '[SET]' : '[NOT SET]'));
   console.log('   GMAIL_PASSWORD=' + (process.env.GMAIL_PASSWORD ? '[SET]' : '[NOT SET]'));
   console.log('\n2. Verify Gmail App Password format:');
+
   console.log('   - Should contain spaces (e.g., "eibk klnu avsz abim")');
   console.log('   - 16 characters total');
   console.log('\n3. Enable Gmail 2FA:');
